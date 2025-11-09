@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genilia - Admin Upload</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 2rem;
+        }
+        .container {
+            background: #ffffff;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+            width: 100%;
+            max-width: 500px;
+        }
+        h1 {
+            text-align: center;
+            color: #007bff;
+            margin-top: 0;
+        }
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+        input[type="file"], select, input[type="text"] {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+        /* This is the text field for 'Other' */
+        #other-category-group {
+            display: none; /* Hidden by default */
+        }
+        button {
+            width: 100%;
+            padding: 0.85rem;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #message {
+            margin-top: 1.5rem;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+        #message.success {
+            color: green;
+        }
+        #message.error {
+            color: red;
+        }
+        .danger-zone {
+            margin-top: 3rem;
+            border-top: 2px solid #ff4d4d;
+            padding-top: 1.5rem;
+        }
+        .danger-zone h2 {
+            color: #ff4d4d;
+            margin-top: 0;
+            text-align: center;
+        }
+        .danger-zone p {
+            font-size: 0.9rem;
+            text-align: center;
+            color: #555;
+        }
+        #reset-button {
+            background-color: #ff4d4d;
+        }
+        #reset-button:hover {
+            background-color: #c93a3a;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Admin Document Upload</h1>
+        <form id="upload-form">
+            <div class="form-group">
+                <label for="category-select">Select Category:</label>
+                <select id="category-select" name="category-select">
+                    <option value="other">--- Other (Please specify) ---</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="other-category-group">
+                <label for="other-category">New Category Name:</label>
+                <input type="text" id="other-category" name="other-category" placeholder="e.g., chips, beverages">
+            </div>
+
+            <div class="form-group">
+                <label for="file-upload">Choose File:</label>
+                <input type="file" id="file-upload" name="file" required>
+            </div>
+
+            <button type="submit" id="submit-button">Upload File</button>
+        </form>
+        <div id="message"></div>
+
+        <div class="danger-zone">
+            <h2>Danger Zone</h2>
+            <p>This will permanently delete all ingested documents, metadata, categories, and chat sessions. This cannot be undone.</p>
+            <button type="button" id="reset-button">Factory Reset System</button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const categorySelect = document.getElementById("category-select");
+            const otherCategoryGroup = document.getElementById("other-category-group");
+            const otherCategoryInput = document.getElementById("other-category");
+            const uploadForm = document.getElementById("upload-form");
+            const messageEl = document.getElementById("message");
+            const submitButton = document.getElementById("submit-button");
+            const resetButton = document.getElementById("reset-button");
+
+            // --- 1. Fetch and Populate Categories ---
+            const RAG_AGENT_URL = "http://127.0.0.1:8000";
+            const MCP_SERVER_URL = "http://127.0.0.1:8002";
+
+            async function fetchCategories() {
+                try {
+                    const response = await fetch(`${RAG_AGENT_URL}/categories`);
+                    const data = await response.json();
+
+                    if (data.categories) {
+                        const otherOption = categorySelect.querySelector('option[value="other"]');
+                        categorySelect.innerHTML = ''; // Clear all options
+
+                        data.categories.forEach(category => {
+                            const option = document.createElement("option");
+                            option.value = category;
+                            option.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+                            categorySelect.appendChild(option);
+                        });
+
+                        categorySelect.appendChild(otherOption); // Add "Other" back at the end
+                    }
+                } catch (error) {
+                    console.error("Error fetching categories:", error);
+                    messageEl.textContent = "Error loading categories. Please refresh.";
+                    messageEl.className = "error";
+                }
+            }
+
+            // --- 2. NEW: Handle "Other" Category Visibility ---
+            categorySelect.addEventListener("change", () => {
+                if (categorySelect.value === "other") {
+                    otherCategoryGroup.style.display = "block";
+                    otherCategoryInput.focus();
+                } else {
+                    otherCategoryGroup.style.display = "none";
+                }
+            });
+
+            // --- 3. Handle Form Submission (with "Other" logic) ---
+            uploadForm.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                messageEl.textContent = "Uploading, please wait...";
+                messageEl.className = "";
+                submitButton.disabled = true;
+
+                const formData = new FormData();
+                const fileInput = document.getElementById("file-upload");
+
+                if (!fileInput.files[0]) {
+                    messageEl.textContent = "Please select a file to upload.";
+                    messageEl.className = "error";
+                    submitButton.disabled = false;
+                    return;
+                }
+                formData.append("file", fileInput.files[0]);
+
+                // --- NEW: Get category from dropdown OR text field ---
+                let category = categorySelect.value;
+                if (category === "other") {
+                    category = otherCategoryInput.value.trim();
+                    if (!category) {
+                        messageEl.textContent = "Please enter a name for the 'Other' category.";
+                        messageEl.className = "error";
+                        submitButton.disabled = false;
+                        return;
+                    }
+                }
+                formData.append("category", category);
+
+                try {
+                    const response = await fetch(`${RAG_AGENT_URL}/upload`, {
+                        method: "POST",
+                        body: formData,
+                    });
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        messageEl.textContent = `Success! File '${result.filename}' uploaded to '${result.category}'.`;
+                        messageEl.className = "success";
+                        uploadForm.reset();
+                        otherCategoryGroup.style.display = "none";
+                        fetchCategories(); // Refresh categories to include the new one
+                    } else {
+                        throw new Error(result.error || "An unknown error occurred.");
+                    }
+                } catch (error) {
+                    console.error("Upload failed:", error);
+                    messageEl.textContent = `Upload failed: ${error.message}`;
+                    messageEl.className = "error";
+                } finally {
+                    submitButton.disabled = false;
+                }
+            });
+
+            // --- 4. NEW: Handle Factory Reset Button ---
+            resetButton.addEventListener("click", async () => {
+                if (!confirm("ARE YOU SURE?\nThis will delete all agent knowledge AND all chat histories permanently.")) {
+                    return;
+                }
+                if (prompt("To confirm, please type 'DELETE' in all caps.") !== "DELETE") {
+                    messageEl.textContent = "Reset cancelled.";
+                    messageEl.className = "";
+                    return;
+                }
+
+                messageEl.textContent = "Resetting system, please wait...";
+                messageEl.className = "";
+                submitButton.disabled = true;
+                resetButton.disabled = true;
+
+               // --- THIS IS THE NEW, ROBUST CODE ---
+try {
+    messageEl.textContent = "Resetting system... (Step 1/2: Wiping RAG knowledge...)";
+    // We use Promise.allSettled to ensure both requests run
+    // even if one fails.
+    const [ragResult, mcpResult] = await Promise.allSettled([
+        fetch(`${RAG_AGENT_URL}/admin/reset`, { method: "POST" }),
+        fetch(`${MCP_SERVER_URL}/admin/clear-memory`, { method: "GET" })
+    ]);
+
+    let allSuccess = true;
+    let finalMessage = "";
+
+    // Check RAG Agent reset
+    if (ragResult.status === 'fulfilled' && ragResult.value.ok) {
+        finalMessage += "Agent knowledge (RAG) reset successfully. ";
+    } else {
+        allSuccess = false;
+        finalMessage += "RAG Agent reset FAILED (is port 8000 running?). ";
+        console.error("RAG Reset Failed:", ragResult.reason || await ragResult.value.json());
+    }
+
+    // Check MCP Server reset
+    messageEl.textContent = "Resetting system... (Step 2/2: Wiping chat memory...)";
+    if (mcpResult.status === 'fulfilled' && mcpResult.value.ok) {
+        finalMessage += "Chat sessions (MCP) reset successfully. ";
+    } else {
+        allSuccess = false;
+        finalMessage += "MCP chat session reset FAILED (is port 8002 running?). ";
+        console.error("MCP Reset Failed:", mcpResult.reason || await mcpResult.value.json());
+    }
+
+    // Report final status
+    messageEl.textContent = finalMessage;
+    if (allSuccess) {
+        messageEl.className = "success";
+        fetchCategories(); // Refresh categories list
+    } else {
+        messageEl.className = "error";
+    }
+
+} catch (error) {
+    // This catch is for a total JS failure
+    console.error("Reset script failed:", error);
+    messageEl.textContent = `Reset script failed: ${error.message}`;
+    messageEl.className = "error";
+} finally {
+    submitButton.disabled = false;
+    resetButton.disabled = false;
+}
+            });
+
+            // --- Initial Load ---
+            fetchCategories();
+        });
+    </script>
+</body>
+</html>

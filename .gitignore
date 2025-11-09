@@ -1,0 +1,45 @@
+# --- Secrets ---
+.env
+*.env*
+*.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- Private Documentation ---
+deployment.md
+
+# --- Python ---
+.venv/
+venv/
+*.pyc
+__pycache__/
+*.egg-info
+pip-wheel-metadata/
+.pytest_cache/
+
+# --- RAG Agent Data (CRITICAL) ---
+# This data is the "brain" of your agent.
+# It's private and should not be on GitHub.
+rag_agent/db_chroma/
+rag_agent/source_documents/
+rag_agent/processed_documents/
+
+# We commit the default categories, but you
+# may want to gitignore it if it becomes sensitive.
+# rag_agent/categories.json
+
+# --- Frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+
+# --- OS / IDE Files ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
