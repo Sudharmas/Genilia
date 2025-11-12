@@ -44,9 +44,8 @@
             border-radius: 8px;
             box-sizing: border-box;
         }
-        /* This is the text field for 'Other' */
         #other-category-group {
-            display: none; /* Hidden by default */
+            display: none;
         }
         button {
             width: 100%;
@@ -125,7 +124,7 @@
 
         <div class="danger-zone">
             <h2>Danger Zone</h2>
-            <p>This will permanently delete all ingested documents, metadata, categories, and chat sessions. This cannot be undone.</p>
+            <p>This will permanently delete all ingested documents, metadata, categories, all trained models, and all chat sessions. This cannot be undone.</p>
             <button type="button" id="reset-button">Factory Reset System</button>
         </div>
     </div>
@@ -140,7 +139,6 @@
             const submitButton = document.getElementById("submit-button");
             const resetButton = document.getElementById("reset-button");
 
-            // --- 1. Fetch and Populate Categories ---
             const RAG_AGENT_URL = "http://127.0.0.1:8000";
             const MCP_SERVER_URL = "http://127.0.0.1:8002";
 
@@ -150,8 +148,9 @@
                     const data = await response.json();
 
                     if (data.categories) {
-                        const otherOption = categorySelect.querySelector('option[value="other"]');
-                        categorySelect.innerHTML = ''; // Clear all options
+                        const currentValue = categorySelect.value;
+
+                        categorySelect.innerHTML = '';
 
                         data.categories.forEach(category => {
                             const option = document.createElement("option");
@@ -160,7 +159,18 @@
                             categorySelect.appendChild(option);
                         });
 
-                        categorySelect.appendChild(otherOption); // Add "Other" back at the end
+                        const otherOption = document.createElement("option");
+                        otherOption.value = "other";
+                        otherOption.textContent = "--- Other (Please specify) ---";
+                        categorySelect.appendChild(otherOption);
+
+                        categorySelect.value = currentValue || "general";
+
+                        if (categorySelect.value === "other") {
+                            otherCategoryGroup.style.display = "block";
+                        } else {
+                            otherCategoryGroup.style.display = "none";
+                        }
                     }
                 } catch (error) {
                     console.error("Error fetching categories:", error);
@@ -169,17 +179,16 @@
                 }
             }
 
-            // --- 2. NEW: Handle "Other" Category Visibility ---
             categorySelect.addEventListener("change", () => {
                 if (categorySelect.value === "other") {
                     otherCategoryGroup.style.display = "block";
+                    otherCategoryInput.value = "";
                     otherCategoryInput.focus();
                 } else {
                     otherCategoryGroup.style.display = "none";
                 }
             });
 
-            // --- 3. Handle Form Submission (with "Other" logic) ---
             uploadForm.addEventListener("submit", async (e) => {
                 e.preventDefault();
                 messageEl.textContent = "Uploading, please wait...";
@@ -197,7 +206,6 @@
                 }
                 formData.append("file", fileInput.files[0]);
 
-                // --- NEW: Get category from dropdown OR text field ---
                 let category = categorySelect.value;
                 if (category === "other") {
                     category = otherCategoryInput.value.trim();
@@ -222,7 +230,7 @@
                         messageEl.className = "success";
                         uploadForm.reset();
                         otherCategoryGroup.style.display = "none";
-                        fetchCategories(); // Refresh categories to include the new one
+                        fetchCategories();
                     } else {
                         throw new Error(result.error || "An unknown error occurred.");
                     }
@@ -235,9 +243,8 @@
                 }
             });
 
-            // --- 4. NEW: Handle Factory Reset Button ---
             resetButton.addEventListener("click", async () => {
-                if (!confirm("ARE YOU SURE?\nThis will delete all agent knowledge AND all chat histories permanently.")) {
+                if (!confirm("ARE YOU SURE?\nThis will delete all agent knowledge, all trained models, AND all chat histories permanently.")) {
                     return;
                 }
                 if (prompt("To confirm, please type 'DELETE' in all caps.") !== "DELETE") {
@@ -251,59 +258,49 @@
                 submitButton.disabled = true;
                 resetButton.disabled = true;
 
-               // --- THIS IS THE NEW, ROBUST CODE ---
-try {
-    messageEl.textContent = "Resetting system... (Step 1/2: Wiping RAG knowledge...)";
-    // We use Promise.allSettled to ensure both requests run
-    // even if one fails.
-    const [ragResult, mcpResult] = await Promise.allSettled([
-        fetch(`${RAG_AGENT_URL}/admin/reset`, { method: "POST" }),
-        fetch(`${MCP_SERVER_URL}/admin/clear-memory`, { method: "GET" })
-    ]);
+                try {
+                    const [ragResult, mcpResult] = await Promise.allSettled([
+                        fetch(`${RAG_AGENT_URL}/admin/reset`, { method: "POST" }),
+                        fetch(`${MCP_SERVER_URL}/admin/clear-memory`, { method: "GET" })
+                    ]);
 
-    let allSuccess = true;
-    let finalMessage = "";
+                    let allSuccess = true;
+                    let finalMessage = "";
 
-    // Check RAG Agent reset
-    if (ragResult.status === 'fulfilled' && ragResult.value.ok) {
-        finalMessage += "Agent knowledge (RAG) reset successfully. ";
-    } else {
-        allSuccess = false;
-        finalMessage += "RAG Agent reset FAILED (is port 8000 running?). ";
-        console.error("RAG Reset Failed:", ragResult.reason || await ragResult.value.json());
-    }
+                    if (ragResult.status === 'fulfilled' && ragResult.value.ok) {
+                        finalMessage += "Agent knowledge (RAG) reset successfully. ";
+                    } else {
+                        allSuccess = false;
+                        finalMessage += "RAG Agent reset FAILED (is port 8000 running?). ";
+                        console.error("RAG Reset Failed:", ragResult.reason || (ragResult.value ? await ragResult.value.json() : 'Unknown error'));
+                    }
 
-    // Check MCP Server reset
-    messageEl.textContent = "Resetting system... (Step 2/2: Wiping chat memory...)";
-    if (mcpResult.status === 'fulfilled' && mcpResult.value.ok) {
-        finalMessage += "Chat sessions (MCP) reset successfully. ";
-    } else {
-        allSuccess = false;
-        finalMessage += "MCP chat session reset FAILED (is port 8002 running?). ";
-        console.error("MCP Reset Failed:", mcpResult.reason || await mcpResult.value.json());
-    }
+                    if (mcpResult.status === 'fulfilled' && mcpResult.value.ok) {
+                        finalMessage += "Chat sessions (MCP) reset successfully. ";
+                    } else {
+                        allSuccess = false;
+                        finalMessage += "MCP chat session reset FAILED (is port 8002 running?). ";
+                        console.error("MCP Reset Failed:", mcpResult.reason || (mcpResult.value ? await mcpResult.value.json() : 'Unknown error'));
+                    }
 
-    // Report final status
-    messageEl.textContent = finalMessage;
-    if (allSuccess) {
-        messageEl.className = "success";
-        fetchCategories(); // Refresh categories list
-    } else {
-        messageEl.className = "error";
-    }
+                    messageEl.textContent = finalMessage;
+                    if (allSuccess) {
+                        messageEl.className = "success";
+                        fetchCategories();
+                    } else {
+                        messageEl.className = "error";
+                    }
 
-} catch (error) {
-    // This catch is for a total JS failure
-    console.error("Reset script failed:", error);
-    messageEl.textContent = `Reset script failed: ${error.message}`;
-    messageEl.className = "error";
-} finally {
-    submitButton.disabled = false;
-    resetButton.disabled = false;
-}
+                } catch (error) {
+                    console.error("Reset script failed:", error);
+                    messageEl.textContent = `Reset script failed: ${error.message}`;
+                    messageEl.className = "error";
+                } finally {
+                    submitButton.disabled = false;
+                    resetButton.disabled = false;
+                }
             });
 
-            // --- Initial Load ---
             fetchCategories();
         });
     </script>

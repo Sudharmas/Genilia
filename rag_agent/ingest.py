@@ -1,4 +1,3 @@
-
 from dotenv import load_dotenv
 import os
 import shutil
@@ -17,32 +16,19 @@ from langchain_community.document_loaders import (
     Docx2txtLoader,
     TextLoader
 )
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from google.api_core import exceptions as google_exceptions
+from langchain_huggingface import HuggingFaceEmbeddings
+from typing import List
 
 SOURCE_DOCUMENTS_DIR = os.path.join(script_dir, "source_documents")
 PROCESSED_DOCUMENTS_DIR = os.path.join(script_dir, "processed_documents")
 PERSIST_DIRECTORY = os.path.join(script_dir, "db_chroma")
+CATEGORIES_FILE = os.path.join(script_dir, "categories.json")
 
-if "GOOGLE_API_KEY" not in os.environ:
-    raise EnvironmentError("GOOGLE_API_KEY not set in environment variables.")
-
-print("Initializing embedding model...")
-try:
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    print("Embedding model initialized.")
-except google_exceptions.PermissionDenied:
-    print("\n--- PERMISSION DENIED ---")
-    print("Error: Failed to authenticate with Google AI. ")
-    print("Please ensure your GOOGLE_API_KEY is correct and has the right permissions.")
-    exit(1)
-except Exception as e:
-    print(f"\nAn unexpected error occurred: {e}")
-    exit(1)
-
+print("Initializing local embedding model (all-MiniLM-L6-v2)...")
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+print("Embedding model initialized.")
 
 LOADER_MAPPING = {
     ".pdf": PyMuPDFLoader,
@@ -53,7 +39,7 @@ LOADER_MAPPING = {
 }
 
 
-def load_and_process_documents(source_dir, processed_dir):
+def load_and_process_documents(source_dir, processed_dir) -> List:
     """
     Loads all documents from source_dir, WALKS sub-folders,
     and assigns metadata based on the folder name.
@@ -75,25 +61,19 @@ def load_and_process_documents(source_dir, processed_dir):
 
             if ext in LOADER_MAPPING:
                 relative_path = os.path.relpath(root, source_dir)
-
-                if relative_path == ".":
-                    product_line = "general"
-                else:
-                    product_line = relative_path.split(os.sep)[0]
-
-                print(f"  > Loading new file: {file} (Category : {product_line})")
+                product_line = "general" if relative_path == "." else relative_path.split(os.sep)[0]
+                print(f"  > Loading new file: {file} (Product Line: {product_line})")
 
                 try:
                     loader_class = LOADER_MAPPING[ext]
                     loader = loader_class(file_path)
-
                     loaded_docs = loader.load()
 
                     for doc in loaded_docs:
                         doc.metadata["product_line"] = product_line
                         doc.metadata["source"] = file
-
                     all_documents.extend(loaded_docs)
+
                     processed_subfolder = os.path.join(processed_dir, relative_path)
                     if not os.path.exists(processed_subfolder):
                         os.makedirs(processed_subfolder, exist_ok=True)
@@ -109,15 +89,14 @@ def load_and_process_documents(source_dir, processed_dir):
     print(f"Total new documents loaded: {len(all_documents)}")
     return all_documents
 
-def process_and_store_documents():
-    """
-    The main function to load, split, and store documents in ChromaDB.
-    This is now "idempotent" - it only adds new files.
-    """
-    documents = load_and_process_documents(SOURCE_DOCUMENTS_DIR, PROCESSED_DOCUMENTS_DIR)
 
+def process_and_store_documents(documents: List):
+    """
+    The main function to split and store documents in ChromaDB.
+    It now OPENS AND CLOSES its own DB connection for writing.
+    """
     if not documents:
-        print("No new documents to process. Database is up-to-date.")
+        print("No new documents to process.")
         return
 
     print("Splitting new documents into chunks...")
@@ -129,39 +108,34 @@ def process_and_store_documents():
         print("No chunks created from new documents. Exiting.")
         return
 
+    print("Opening DB connection for writing...")
+    db = Chroma(
+        persist_directory=PERSIST_DIRECTORY,
+        embedding_function=embeddings
+    )
 
-    if os.path.exists(PERSIST_DIRECTORY):
-        print(f"  > Existing database found at {PERSIST_DIRECTORY}. Loading...")
-        db = Chroma(
-            persist_directory=PERSIST_DIRECTORY,
-            embedding_function=embeddings
-        )
-        print("  > Database loaded. Adding new documents...")
+    print("  > Adding new documents to the database...")
+    db.add_documents(chunks)
+    print(f"  > Added {len(chunks)} new chunks to the database.")
 
-        db.add_documents(chunks)
-        print(f"  > Added {len(chunks)} new chunks to the database.")
-
-    else:
-        print(f"  > No existing database found. Creating a new one at {PERSIST_DIRECTORY}...")
-        db = Chroma.from_documents(
-            documents=chunks,
-            embedding=embeddings,
-            persist_directory=PERSIST_DIRECTORY
-        )
-        print(f"  > New database created with {len(chunks)} chunks.")
-
-    db.persist()
-    print("Ingestion complete. Vector database is ready.")
+    del db
+    print("Ingestion complete. DB connection closed.")
 
 
 if __name__ == "__main__":
+    """
+    This allows the script to still be run standalone
+    """
     if not os.path.exists(SOURCE_DOCUMENTS_DIR):
         os.makedirs(SOURCE_DOCUMENTS_DIR)
-        print(f"Created directory: {SOURCE_DOCUMENTS_DIR}")
-        print(f"Please add your documents (PDFs, Excel files) to this folder.")
-
     if not os.path.exists(PROCESSED_DOCUMENTS_DIR):
         os.makedirs(PROCESSED_DOCUMENTS_DIR)
-        print(f"Created directory: {PROCESSED_DOCUMENTS_DIR}")
 
-    process_and_store_documents()
+    print("--- Running standalone ingestion ---")
+    documents = load_and_process_documents(SOURCE_DOCUMENTS_DIR, PROCESSED_DOCUMENTS_DIR)
+
+    if documents:
+        process_and_store_documents(documents)
+    else:
+        print("No new documents found to process.")
+    print("--- Standalone ingestion finished ---")

@@ -1,19 +1,9 @@
-
-
 from dotenv import load_dotenv
 import uvicorn
 import os
 import httpx
 from typing import List, Dict
-
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
-from fastapi.middleware.cors import CORSMiddleware
-
+from contextlib import asynccontextmanager
 
 script_path = os.path.abspath(__file__)
 script_dir = os.path.dirname(script_path)
@@ -23,22 +13,44 @@ dotenv_path = os.path.join(root_dir, '.env')
 print(f"Attempting to load .env file from: {dotenv_path}")
 load_dotenv(dotenv_path=dotenv_path)
 
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from fastapi.middleware.cors import CORSMiddleware
 
-if "GOOGLE_API_KEY" not in os.environ:
-    raise EnvironmentError("GOOGLE_API_KEY not set. Please check your .env file.")
+from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage, AIMessage
 
 RAG_AGENT_URL = "http://127.0.0.1:8000/query"
 ACTION_AGENT_URL = "http://127.0.0.1:8001/run-agent"
 
-llm_router = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    temperature=0
-)
-llm_condenser = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
-    temperature=0
-)
-print(f"MCP LLMs {llm_router.model} initialized.")
+
+# FINETUNE_AGENT_URL = "http://127.0.0.1:8003/query"
+
+def get_llm(model_name: str = "phi3", google_fallback: str = "gemini-2.0-flash"):
+    """
+    Tries to load the local Ollama model.
+    If it fails (Ollama not running), it falls back to the Google Gemini model.
+    """
+    try:
+        llm = ChatOllama(model=model_name)
+        llm.invoke("Hello")
+        print(f"--- Successfully connected to local LLM: {model_name} ---")
+        return llm
+    except Exception as e:
+        print(f"--- WARNING: Local model '{model_name}' failed. Falling back to Google. ---")
+        print(f"--- Error: {e} ---")
+        if "GOOGLE_API_KEY" not in os.environ:
+            print("--- ERROR: GOOGLE_API_KEY not found for fallback. ---")
+            return None
+        return ChatGoogleGenerativeAI(model=google_fallback)
+
+print("Initializing local LLMs (phi3)...")
+llm_router = get_llm(model_name="phi3", google_fallback="gemini-2.0-flash")
+llm_condenser = get_llm(model_name="phi3", google_fallback="gemini-2.0-flash")
+print("MCP LLMs initialized.")
 
 routing_prompt = ChatPromptTemplate.from_template(
     """
@@ -63,7 +75,6 @@ User Query:
 Which agent should handle this? (Return *only* 'rag_agent' or 'action_agent')
 """
 )
-
 routing_chain = routing_prompt | llm_router | StrOutputParser()
 print("MCP Routing chain created.")
 
@@ -75,7 +86,6 @@ Chat History:
 
 Follow Up Input: {input}
 Standalone Question:"""
-
 condensing_prompt = ChatPromptTemplate.from_template(condensing_prompt_template)
 condensing_chain = condensing_prompt | llm_condenser | StrOutputParser()
 print("MCP Query Condensing chain created.")
@@ -84,20 +94,19 @@ chat_histories: Dict[str, List] = {}
 
 
 def get_chat_history(session_id: str):
-    """Retrieves or creates a chat history for a session."""
     if session_id not in chat_histories:
         chat_histories[session_id] = []
     return chat_histories[session_id]
 
 
 def format_history_for_prompt(history: List):
-    """Formats the history list for the prompt."""
     return "\n".join(
         [
             f"Human: {msg.content}" if isinstance(msg, HumanMessage) else f"AI: {msg.content}"
             for msg in history
         ]
     )
+
 
 RAG_FAILURE_PHRASES = [
     "i'm sorry, i don't have that information",
@@ -115,10 +124,22 @@ def is_rag_failure(answer: str) -> bool:
     return False
 
 
+http_client = httpx.AsyncClient(timeout=30.0)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("HTTPX AsyncClient started.")
+    yield
+    await http_client.aclose()
+    print("HTTPX AsyncClient closed.")
+
+
 app = FastAPI(
-    title="Genilia MCP (Mission Control Plane)",
-    description="The central router for the Genilia agent system.",
-    version="1.2.0"
+    title="Genilia MCP (Hybrid)",
+    description="The central router for the Genilia agent system (Local-first).",
+    version="1.5.0",
+    lifespan=lifespan
 )
 
 origins = [
@@ -126,11 +147,8 @@ origins = [
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:8000",
-    "http://127.0.0.1:8001",
-    "http://127.0.0.1:8002",
     "http://localhost:8000",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -139,51 +157,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-http_client = httpx.AsyncClient(timeout=30.0)
 
 class ChatRequest(BaseModel):
     input: str
     session_id: str = Field(default="default-session-id", description="Unique ID for the chat session")
 
 
-@app.on_event("startup")
-async def startup_event():
-    print("HTTPX AsyncClient started.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await http_client.close()
-    print("HTTPX AsyncClient closed.")
-
-
 @app.get("/")
 def get_status():
     return {"status": "ok", "message": "MCP Server is running!"}
 
+
 @app.get("/admin/clear-memory")
 def clear_all_chat_history():
-    """
-    DANGER: Clears all in-memory chat histories for all sessions.
-    """
     global chat_histories
     count = len(chat_histories)
     chat_histories.clear()
     print(f"--- ADMIN: Cleared {count} chat session histories. ---")
     return {"status": "ok", "message": f"Cleared {count} session histories."}
 
+
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    """
-    The main user entry point.
-    It now handles chat history and condenses queries.
-    """
     print(f"\n--- MCP RECEIVED QUERY for Session: '{request.session_id}' ---")
     print(f"Original Input: '{request.input}'")
 
     try:
         chat_history = get_chat_history(request.session_id)
-
         if not chat_history:
             condensed_query = request.input
             print("No history. Using input as standalone query.")
@@ -195,7 +195,6 @@ async def chat_endpoint(request: ChatRequest):
                 "input": request.input
             })
             print(f"Condensed Query: '{condensed_query}'")
-
     except Exception as e:
         print(f"Error during query condensing: {e}")
         return {"error": "Failed to process chat history."}, 500
@@ -205,7 +204,6 @@ async def chat_endpoint(request: ChatRequest):
         agent_to_use = await routing_chain.ainvoke({"input": condensed_query})
         agent_to_use = agent_to_use.strip().replace("'", "")
         print(f"Decision: First attempt with '{agent_to_use}'")
-
     except Exception as e:
         print(f"Error during routing: {e}")
         return {"error": "Failed to route query."}, 500
@@ -218,7 +216,6 @@ async def chat_endpoint(request: ChatRequest):
             print(f"Calling RAG Agent with: '{condensed_query}'")
             response = await http_client.post(RAG_AGENT_URL, json={"question": condensed_query})
             response.raise_for_status()
-
             final_json_response = response.json()
             final_answer = final_json_response.get("answer", "")
 
@@ -240,18 +237,15 @@ async def chat_endpoint(request: ChatRequest):
             print(f"Calling Action Agent with: '{condensed_query}'")
             response = await http_client.post(ACTION_AGENT_URL, json={"input": condensed_query})
             response.raise_for_status()
-
             final_json_response = response.json()
             final_answer = final_json_response.get("output", "")
             print("Action Agent succeeded.")
-
         except httpx.HTTPStatusError as e:
             print(f"Error calling Action agent: {e}")
             final_json_response = {"error": "Action agent is unavailable or failed."}
         except Exception as e:
             print(f"Error processing Action response: {e}")
             final_json_response = {"error": "Failed to process Action agent response."}
-
     else:
         if final_answer:
             pass
