@@ -16,6 +16,10 @@ from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from .ingest import process_and_store_documents, load_and_process_documents, PROCESSED_DOCUMENTS_DIR, SOURCE_DOCUMENTS_DIR
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from langsmith import Client
+from langsmith.evaluation import evaluate, LangChainStringEvaluator
+import uuid
+
 
 script_path = os.path.abspath(__file__)
 script_dir = os.path.dirname(script_path)
